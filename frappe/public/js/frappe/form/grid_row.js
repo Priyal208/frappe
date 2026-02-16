@@ -502,16 +502,29 @@ export default class GridRow {
 
 		d.set_primary_action(__("Add"), () => {
 			let selected_fields = d.get_values().fields;
+			const existing_settings = {};
+			this.selected_columns_for_grid.forEach((col) => {
+				existing_settings[col.fieldname] = col;
+			});
+
 			this.selected_columns_for_grid = [];
 			if (selected_fields) {
 				selected_fields.forEach((selected_column) => {
-					let docfield = frappe.meta.get_docfield(this.grid.doctype, selected_column);
-					this.grid.update_default_colsize(docfield);
+					if (existing_settings[selected_column]) {
+						this.selected_columns_for_grid.push(existing_settings[selected_column]);
+					} else {
+						let docfield = frappe.meta.get_docfield(
+							this.grid.doctype,
+							selected_column
+						);
+						this.grid.update_default_colsize(docfield);
 
-					this.selected_columns_for_grid.push({
-						fieldname: selected_column,
-						columns: docfield.columns || docfield.colsize,
-					});
+						this.selected_columns_for_grid.push({
+							fieldname: selected_column,
+							columns: docfield.columns || docfield.colsize,
+							sticky: docfield.sticky,
+						});
+					}
 				});
 
 				this.render_selected_columns();
@@ -596,14 +609,14 @@ export default class GridRow {
 							<div class='col-3' style='padding-top: 2px; margin-top:-2px;' title='${__("Columns")}'>
 								<input class='form-control column-width my-1 input-xs text-right'
 								style='height: 24px; max-width: 80px; background: var(--bg-color);'
-									value='${docfield.columns || cint(d.columns)}'
+									value='${cint(d.columns) || docfield.columns}'
 									data-fieldname='${docfield.fieldname}' style='background-color: var(--modal-bg); display: inline'>
 							</div>
 							<div class='col-2' title='${__("Sticky")}'>
 								<input type='checkbox' class='form-control sticky-column'
 									style='margin-top: 8px'
-									${docfield.sticky ? "checked" : ""}
-									data-fieldname='${docfield.fieldname}' style='background-color: var(--modal-bg); display: inline'>
+									${d.sticky ? "checked" : ""}
+									data-fieldname='${d.fieldname}' style='background-color: var(--modal-bg); display: inline'>
 							</div>
 							<div class='col-1' style='padding-top: 3px;'>
 								<a class='text-muted remove-field' data-fieldname='${docfield.fieldname}'>
@@ -642,6 +655,7 @@ export default class GridRow {
 			this.selected_columns_for_grid.push({
 				fieldname: $(columns[idx]).attr("data-fieldname"),
 				columns: cint($(columns[idx]).find(".column-width").attr("value")),
+				sticky: $(columns[idx]).find(".sticky-column").is(":checked") ? 1 : 0,
 			});
 		});
 	}
@@ -1038,7 +1052,7 @@ export default class GridRow {
 		let is_focused = false;
 
 		var $col = $(
-			`<div class="col grid-static-col grid-data-column col-xs-${colsize} ${add_class}" style="${add_style}"></div>`
+			`<div class="col grid-static-col col-xs-${colsize} ${add_class}" style="${add_style}"></div>`
 		)
 			.attr("data-fieldname", df.fieldname)
 			.attr("data-fieldtype", df.fieldtype)
@@ -1238,6 +1252,12 @@ export default class GridRow {
 				field.$input.attr("data-last-input", 1);
 			} else if (this.columns_list && this.columns_list.slice(0)[0] === column) {
 				field.$input.attr("data-first-input", 1);
+			}
+			if (df.fieldtype === "Currency") {
+				this.update_currency_symbol_in_grid_input(field, df);
+				field.$input.off("input.grid-currency").on("input.grid-currency", () => {
+					this.update_currency_symbol_in_grid_input(field, df);
+				});
 			}
 		}
 
@@ -1565,12 +1585,58 @@ export default class GridRow {
 			// - after row removals via customize_form.js on links, actions and states child-tables
 			if (this.doc) field.docname = this.doc.name;
 			field.refresh();
+			if (df && df.fieldtype === "Currency") {
+				this.update_currency_symbol_in_grid_input(field, df);
+			}
 		}
 
 		// in form
 		if (this.grid_form) {
 			this.grid_form.refresh_field(fieldname);
 		}
+	}
+
+	update_currency_symbol_in_grid_input(field, df) {
+		if (!field?.$input || !this.grid?.is_editable?.()) return;
+
+		const currency = frappe.meta.get_field_currency(df, this.doc);
+		const symbol = window.get_currency_symbol(currency);
+		const show_on_right =
+			cint(frappe.model.get_value(":Currency", currency, "symbol_on_right")) === 1;
+
+		let $wrapper = field.$input.parent();
+		if (!$wrapper.hasClass("grid-currency-input")) {
+			field.$input.wrap('<div class="grid-currency-input"></div>');
+		}
+
+		$wrapper.toggleClass("grid-currency-symbol-right", show_on_right);
+
+		let $prefix = $wrapper.find(".grid-currency-prefix");
+		let $suffix = $wrapper.find(".grid-currency-suffix");
+
+		if (!symbol) {
+			$prefix.remove();
+			$suffix.remove();
+			$wrapper.removeClass("grid-currency-has-value");
+			return;
+		}
+
+		if (show_on_right) {
+			if (!$suffix.length) {
+				$suffix = $('<span class="grid-currency-suffix"></span>').appendTo($wrapper);
+			}
+			$suffix.text(symbol);
+			$prefix.remove();
+		} else {
+			if (!$prefix.length) {
+				$prefix = $('<span class="grid-currency-prefix"></span>').prependTo($wrapper);
+			}
+			$prefix.text(symbol);
+			$suffix.remove();
+		}
+
+		const has_value = /\d/.test(field.$input.val() || "");
+		$wrapper.toggleClass("grid-currency-has-value", has_value);
 	}
 	get_field(fieldname) {
 		let field = this.on_grid_fields_dict[fieldname];
